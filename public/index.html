@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Generador de Ciudades 3D</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="overlay">
+    <div class="overlay-card">
+      <h1>Generador de Ciudades 3D</h1>
+      <p>Ingresá tu nombre para empezar:</p>
+      <input id="playerName" type="text" placeholder="Tu nombre" maxlength="20" />
+      <button id="startBtn">Entrar</button>
+      <p class="hint">WASD para moverte • Click para colocar • 1: Cubo • 2: Esfera</p>
+    </div>
+  </div>
+
+  <div id="toolbar">
+    <button data-shape="cube" class="shape-btn active">Cubo</button>
+    <button data-shape="sphere" class="shape-btn">Esfera</button>
+    <label class="color-label">Color
+      <input id="colorPicker" type="color" value="#7aa1ff" />
+    </label>
+  </div>
+
+  <!-- Librerías -->
+  <script src="lib/socket.js"></script>
+  <script src="https://unpkg.com/three@0.146.0/build/three.min.js"></script>
+  <script src="https://unpkg.com/three@0.146.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="config.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>
