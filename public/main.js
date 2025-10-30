@@ -4,59 +4,7 @@
   // Socket
   const socket = io(window.location.origin, { path: cfg.socketPath });
 
-  // Instrumentación exhaustiva de Socket.IO en cliente
-  (function installSocketDebug(sock) {
-    try {
-      const mgr = sock.io;
-      console.log('[Client][Socket] init', {
-        origin: window.location.origin,
-        path: cfg.socketPath,
-        transports: (mgr && mgr.opts && mgr.opts.transports) || undefined
-      });
-
-      // Entrantes
-      sock.onAny((event, ...args) => {
-        const brief = (() => {
-          try { return JSON.stringify(args[0]).slice(0, 200); } catch { return String(args[0]); }
-        })();
-        console.log('[Client][Socket] <=', event, brief);
-      });
-
-      // Salientes
-      const _emit = sock.emit.bind(sock);
-      sock.emit = (event, ...args) => {
-        const brief = (() => {
-          try { return JSON.stringify(args[0]).slice(0, 200); } catch { return String(args[0]); }
-        })();
-        console.log('[Client][Socket] =>', event, brief);
-        return _emit(event, ...args);
-      };
-
-      // Conexión / reconexión
-      sock.on('connect', () => {
-        const transport = mgr && mgr.engine && mgr.engine.transport && mgr.engine.transport.name;
-        console.log('[Client][Socket] connect id:', sock.id, 'transport:', transport);
-      });
-      sock.on('connect_error', (err) => console.error('[Client][Socket] connect_error', err && (err.message || err)));
-      sock.on('error', (err) => console.error('[Client][Socket] error', err));
-      sock.on('disconnect', (reason) => console.warn('[Client][Socket] disconnect', reason));
-      if (mgr && mgr.on) {
-        mgr.on('reconnect_attempt', (attempt) => console.log('[Client][Socket] reconnect_attempt', attempt));
-        mgr.on('reconnect', (attempt) => console.log('[Client][Socket] reconnect', attempt));
-        mgr.on('reconnect_error', (err) => console.error('[Client][Socket] reconnect_error', err));
-        mgr.on('reconnect_failed', () => console.error('[Client][Socket] reconnect_failed'));
-        mgr.on('ping', () => console.log('[Client][Socket] ping'));
-        mgr.on('pong', (latency) => console.log('[Client][Socket] pong', latency));
-      }
-      if (mgr && mgr.engine && mgr.engine.on) {
-        mgr.engine.on('upgrade', (tr) => console.log('[Client][Engine] upgrade to', tr && tr.name));
-        mgr.engine.on('close', (reason) => console.log('[Client][Engine] close', reason));
-        mgr.engine.on('error', (err) => console.error('[Client][Engine] error', err));
-      }
-    } catch (e) {
-      console.error('[Client][Socket] debug install failed', e);
-    }
-  })(socket);
+  // Debug de cliente desactivado
   let myId = null;
   let myName = '';
 
@@ -84,6 +32,25 @@
   dirLight.castShadow = true;
   scene.add(dirLight);
 
+  // Skybox procedural con THREE.Sky
+  if (THREE.Sky) {
+    const sky = new THREE.Sky();
+    sky.scale.setScalar(10000);
+    scene.add(sky);
+    const sun = new THREE.Vector3();
+    const uniforms = sky.material.uniforms;
+    uniforms['turbidity'].value = 8;
+    uniforms['rayleigh'].value = 2;
+    uniforms['mieCoefficient'].value = 0.005;
+    uniforms['mieDirectionalG'].value = 0.8;
+    const phi = THREE.MathUtils.degToRad(90 - 20);
+    const theta = THREE.MathUtils.degToRad(40);
+    sun.setFromSphericalCoords(1, phi, theta);
+    uniforms['sunPosition'].value.copy(sun);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 0.95;
+  }
+
   // Suelo y grilla
   const groundSize = cfg.world.groundSize;
   const groundGeo = new THREE.PlaneGeometry(groundSize, groundSize);
@@ -101,6 +68,16 @@
   // Raycaster
   const raycaster = new THREE.Raycaster();
   const mouse = new THREE.Vector2();
+  // Vista previa (wireframe) para colocación de bloques
+  const preview = (() => {
+    const size = cfg.default.size;
+    const edges = new THREE.EdgesGeometry(new THREE.BoxGeometry(size, size, size));
+    const mat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8 });
+    const line = new THREE.LineSegments(edges, mat);
+    line.visible = false;
+    scene.add(line);
+    return line;
+  })();
 
   // Estado del cliente
   const players = new Map(); // id -> { group, mesh, label, color, name }
@@ -108,6 +85,7 @@
   let localPlayer = null;
   let currentShape = cfg.default.shape;
   let currentColor = cfg.default.color;
+  let eraseMode = false;
 
   // UI
   const overlay = document.getElementById('overlay');
@@ -115,7 +93,10 @@
   const nameInput = document.getElementById('playerName');
   const toolbar = document.getElementById('toolbar');
   const colorPicker = document.getElementById('colorPicker');
+  const alphaSlider = document.getElementById('alphaSlider');
   const shapeButtons = Array.from(document.querySelectorAll('.shape-btn'));
+  const eraseToggle = document.getElementById('eraseToggle');
+  const generateBtn = document.getElementById('generateBtn');
 
   shapeButtons.forEach(btn => {
     btn.addEventListener('click', () => {
@@ -128,6 +109,29 @@
   colorPicker.addEventListener('input', () => {
     currentColor = colorPicker.value;
   });
+  let currentAlpha = 1;
+  if (alphaSlider) {
+    alphaSlider.addEventListener('input', () => {
+      currentAlpha = Number(alphaSlider.value);
+    });
+  }
+
+  // Botón borrar: toggle modo borrar
+  if (eraseToggle) {
+    eraseToggle.addEventListener('click', () => {
+      eraseMode = !eraseMode;
+      eraseToggle.classList.toggle('active', eraseMode);
+      // ocultar preview en modo borrar
+      if (preview) preview.visible = false;
+    });
+  }
+
+  // Botón generar ciudad
+  if (generateBtn) {
+    generateBtn.addEventListener('click', () => {
+      socket.emit('generate_city');
+    });
+  }
 
   // Teclado para mover
   const keys = {};
@@ -148,11 +152,9 @@
   // Sockets
   socket.on('connect', () => {
     myId = socket.id;
-    console.log('Conectado con id:', myId);
   });
 
   socket.on('init_state', ({ players: playersArray, objects }) => {
-    console.log('[Socket] init_state recibido', { players: playersArray.length, objects: objects.length });
     // Cargar jugadores existentes
     playersArray.forEach(p => addOrUpdatePlayer(p.id, p));
 
@@ -194,28 +196,35 @@
     addObjectMesh(obj);
   });
 
+  socket.on('object_removed', ({ id }) => {
+    const mesh = objectMeshes.get(id);
+    if (mesh) {
+      scene.remove(mesh);
+      objectMeshes.delete(id);
+    }
+  });
+
+  socket.on('reset_world', ({ objects }) => {
+    for (const mesh of objectMeshes.values()) {
+      scene.remove(mesh);
+    }
+    objectMeshes.clear();
+    objects.forEach(obj => addObjectMesh(obj));
+  });
+
   // Registro por UI
-  console.log('[UI] Binding click handler for startBtn');
   startBtn.addEventListener('click', () => {
     const name = (nameInput.value || '').trim() || 'Anónimo';
     myName = name;
-    console.log('BOTON ENTRAR CLICKEADO');
-    console.log('[UI] Entrar clicado, registrando con nombre:', name);
     // Forzar ocultar overlay inmediatamente
     overlay.classList.add('hidden');
-    console.log('[UI] Overlay ocultado inmediato por clic');
     toolbar.style.display = 'flex';
-    // Crear jugador local provisional inmediatamente
-    ensureLocalPlayer();
     // Permitir múltiples clicks para diagnóstico
     // startBtn.disabled = true;
     socket.emit('register', { name }, (res) => {
-      console.log('[Socket] register_ack', res);
       // Ocultar overlay también al recibir ACK
       overlay.classList.add('hidden');
-      console.log('[UI] Overlay ocultado por ACK');
       toolbar.style.display = 'flex';
-      ensureLocalPlayer();
     });
   });
 
@@ -229,10 +238,7 @@
 
   // Raycast para colocar objetos
   window.addEventListener('mousedown', (event) => {
-    if (!localPlayer) {
-      console.warn('[UI] Click ignorado: localPlayer aún no está listo');
-      return;
-    }
+    if (!localPlayer) return;
     if (event.button !== 0) return; // Solo botón izquierdo
 
     const rect = renderer.domElement.getBoundingClientRect();
@@ -244,6 +250,17 @@
     const intersects = raycaster.intersectObjects(intersectables, true);
     if (!intersects.length) return;
     const hit = intersects[0];
+
+    // Modo borrar: eliminar el cubo clicado
+    if (eraseMode) {
+      if (!hit.object.userData.isGround) {
+        const objId = hit.object.userData && hit.object.userData.objectId;
+        if (objId != null) {
+          socket.emit('remove_object', { id: objId });
+        }
+      }
+      return;
+    }
 
     let target = new THREE.Vector3();
     if (hit.object.userData.isGround) {
@@ -264,9 +281,38 @@
       position: { x: target.x, y: target.y, z: target.z },
       size: cfg.default.size,
       color: currentColor,
+      alpha: currentAlpha,
       rotation: { x: 0, y: 0, z: 0 },
     });
   });
+
+  // Actualizar vista previa mientras se mueve el mouse
+  window.addEventListener('mousemove', (event) => {
+    if (eraseMode) { preview.visible = false; return; }
+    const rect = renderer.domElement.getBoundingClientRect();
+    mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+    const intersectables = [ground, ...Array.from(objectMeshes.values())];
+    const intersects = raycaster.intersectObjects(intersectables, true);
+    if (!intersects.length) { preview.visible = false; return; }
+    const hit = intersects[0];
+    let target = new THREE.Vector3();
+    if (hit.object.userData.isGround) {
+      target.copy(hit.point);
+      target.y = 0.5;
+    } else {
+      const basePos = hit.object.position.clone();
+      const n = hit.face ? hit.face.normal.clone() : new THREE.Vector3(0, 1, 0);
+      target.copy(basePos.add(n));
+    }
+    target.x = Math.round(target.x / cfg.gridSize) * cfg.gridSize;
+    target.y = Math.max(0.5, Math.round(target.y / cfg.gridSize) * cfg.gridSize);
+    target.z = Math.round(target.z / cfg.gridSize) * cfg.gridSize;
+    preview.position.set(target.x, target.y, target.z);
+    preview.visible = true;
+  });
+  window.addEventListener('mouseleave', () => { preview.visible = false; });
 
   // Añadir/actualizar players
   function addOrUpdatePlayer(id, p) {
@@ -299,25 +345,7 @@
     updateLabel(entry.label, entry.name);
   }
 
-  function ensureLocalPlayer() {
-    if (localPlayer) return;
-    if (!myId) {
-      console.warn('[UI] ensureLocalPlayer: aún no hay socket.id');
-      return;
-    }
-    const provisional = {
-      name: myName || 'Anónimo',
-      color: currentColor || '#44aa88',
-      position: { x: 0, y: 0.5, z: 0 },
-      rotation: { y: 0 },
-    };
-    addOrUpdatePlayer(myId, provisional);
-    localPlayer = players.get(myId);
-    if (localPlayer) {
-      controls.target.copy(localPlayer.mesh.position);
-      console.log('[UI] Local player provisional creado');
-    }
-  }
+  // Local player se establece únicamente cuando llega init_state
 
   // Objetos
   function addObjectMesh(obj) {
@@ -326,18 +354,19 @@
     if (obj.shape === 'sphere') {
       mesh = new THREE.Mesh(
         new THREE.SphereGeometry(obj.size * 0.5, 24, 16),
-        new THREE.MeshStandardMaterial({ color })
+        new THREE.MeshStandardMaterial({ color, transparent: (obj.alpha ?? 1) < 1, opacity: obj.alpha ?? 1 })
       );
     } else {
       mesh = new THREE.Mesh(
         new THREE.BoxGeometry(obj.size, obj.size, obj.size),
-        new THREE.MeshStandardMaterial({ color })
+        new THREE.MeshStandardMaterial({ color, transparent: (obj.alpha ?? 1) < 1, opacity: obj.alpha ?? 1 })
       );
     }
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     mesh.position.set(obj.position.x, obj.position.y, obj.position.z);
     mesh.rotation.set(obj.rotation.x || 0, obj.rotation.y || 0, obj.rotation.z || 0);
+    mesh.userData.objectId = obj.id;
     scene.add(mesh);
     objectMeshes.set(obj.id, mesh);
   }
@@ -393,13 +422,17 @@
   function updateMovement(dt) {
     if (!localPlayer) return;
     const speed = 5; // unidades por segundo
-    const dir = new THREE.Vector3(
-      (keys['KeyD'] ? 1 : 0) + (keys['KeyA'] ? -1 : 0),
-      0,
-      (keys['KeyS'] ? 1 : 0) + (keys['KeyW'] ? -1 : 0)
-    );
-    if (dir.lengthSq() > 0) {
-      dir.normalize().multiplyScalar(speed * dt);
+    // Movimiento relativo a la cámara
+    const forward = new THREE.Vector3();
+    camera.getWorldDirection(forward);
+    forward.y = 0; forward.normalize();
+    const right = new THREE.Vector3();
+    right.crossVectors(forward, new THREE.Vector3(0,1,0)).normalize();
+    const vx = (keys['KeyD'] ? 1 : 0) + (keys['KeyA'] ? -1 : 0);
+    const vz = (keys['KeyW'] ? 1 : 0) + (keys['KeyS'] ? -1 : 0);
+    if (vx !== 0 || vz !== 0) {
+      const dir = new THREE.Vector3();
+      dir.addScaledVector(right, vx).addScaledVector(forward, vz).normalize().multiplyScalar(speed * dt);
       localPlayer.mesh.position.add(dir);
       localPlayer.group.position.copy(localPlayer.mesh.position);
       localPlayer.label.position.set(localPlayer.mesh.position.x, localPlayer.mesh.position.y + 1.2, localPlayer.mesh.position.z);
@@ -439,4 +472,25 @@
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
   });
+
+  // Controles móviles: flechas mantienen presionado el movimiento mientras se tocan
+  const btnUp = document.getElementById('btnUp');
+  const btnDown = document.getElementById('btnDown');
+  const btnLeft = document.getElementById('btnLeft');
+  const btnRight = document.getElementById('btnRight');
+  function bindHold(btn, keyCode) {
+    if (!btn) return;
+    const onDown = (e) => { e.preventDefault(); keys[keyCode] = true; btn.classList.add('active'); };
+    const onUp = () => { keys[keyCode] = false; btn.classList.remove('active'); };
+    btn.addEventListener('pointerdown', onDown);
+    btn.addEventListener('pointerup', onUp);
+    btn.addEventListener('pointerleave', onUp);
+    btn.addEventListener('pointercancel', onUp);
+  }
+  bindHold(btnUp, 'KeyW');
+  bindHold(btnDown, 'KeyS');
+  bindHold(btnLeft, 'KeyA');
+  bindHold(btnRight, 'KeyD');
+  // Mejor interacción touch en canvas
+  renderer.domElement.style.touchAction = 'none';
 })();

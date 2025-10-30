@@ -10,7 +10,7 @@ const port =  3344;
 // Estado del mundo
 // players: socketId -> { name, color, position: {x,y,z}, rotation: {y} }
 const players = new Map();
-// objects: [{ id, shape, position: {x,y,z}, rotation: {x,y,z}, size, color }]
+// objects: [{ id, shape, position: {x,y,z}, rotation: {x,y,z}, size, color, alpha }]
 const objects = [];
 let nextObjectId = 1;
 
@@ -31,6 +31,56 @@ function snapToGrid(p, grid = 1) {
   };
 }
 
+// Generación de mini ciudad
+function generateMiniCity() {
+  const newObjects = [];
+  const size = 1;
+  const extent = 12; // medio tamaño de ciudad desde el origen
+  const roadEvery = 4;
+  for (let x = -extent; x <= extent; x++) {
+    for (let z = -extent; z <= extent; z++) {
+      // Carreteras en cada N filas/columnas
+      if (x % roadEvery === 0 || z % roadEvery === 0) {
+        newObjects.push({
+          shape: 'cube',
+          position: { x, y: 0.5, z },
+          rotation: { x: 0, y: 0, z: 0 },
+          size,
+          color: '#2b2b2b',
+          alpha: 1,
+        });
+        continue;
+      }
+
+      // Parcelas con edificios footprint 1x1 o 2x2
+      const footprint = (Math.random() < 0.6) ? 2 : 1;
+      const height = Math.floor(3 + Math.random() * 6);
+      for (let fx = 0; fx < footprint; fx++) {
+        for (let fz = 0; fz < footprint; fz++) {
+          for (let y = 0; y < height; y++) {
+            const isWindow = y > 0 && (y % 2 === 1) && (fx === 0 || fx === footprint - 1 || fz === 0 || fz === footprint - 1) && (Math.random() < 0.5);
+            newObjects.push({
+              shape: 'cube',
+              position: { x: x + fx, y: 0.5 + y, z: z + fz },
+              rotation: { x: 0, y: 0, z: 0 },
+              size,
+              color: isWindow ? '#a0c8ff' : '#808080',
+              alpha: isWindow ? 0.5 : 1,
+            });
+          }
+        }
+      }
+
+      // Saltar celdas ocupadas por footprint extra
+      if (footprint === 2) {
+        z += 1; // evitar solapado simple en z
+      }
+    }
+    // avance normal de x
+  }
+  return newObjects;
+}
+
 // Servidor HTTP y estáticos
 const app = express();
 app.use(express.json());
@@ -49,70 +99,11 @@ const io = new Server(server, {
   cors: { origin: '*', methods: ['GET', 'POST'] },
 });
 
-// Instrumentación exhaustiva en servidor
-console.log('[Server][SocketIO] path configurado:', SOCKET_PATH);
-// Traza de upgrades HTTP (WebSocket)
-server.on('upgrade', (req, socket, head) => {
-  console.log('[Server][HTTP] upgrade', req.url);
-});
-
-// Traza Engine.IO por conexión
-if (io && io.engine && io.engine.on) {
-  io.engine.on('connection', (rawSocket) => {
-    try {
-      const tname = rawSocket && rawSocket.transport && rawSocket.transport.name;
-      console.log('[Server][Engine] connection', { id: rawSocket.id, transport: tname });
-      rawSocket.on('upgrade', () => {
-        const newT = rawSocket && rawSocket.transport && rawSocket.transport.name;
-        console.log('[Server][Engine] upgraded', { id: rawSocket.id, transport: newT });
-      });
-      rawSocket.on('close', (reason) => {
-        console.log('[Server][Engine] close', { id: rawSocket.id, reason });
-      });
-      rawSocket.on('error', (err) => {
-        console.error('[Server][Engine] error', { id: rawSocket.id, err: err && (err.message || err) });
-      });
-    } catch (e) {
-      console.error('[Server][Engine] hook failed', e);
-    }
-  });
-}
-
-// Trazar io.emit global
-const _ioEmit = io.emit.bind(io);
-io.emit = (event, ...args) => {
-  const brief = (() => { try { return JSON.stringify(args[0]).slice(0, 200); } catch { return String(args[0]); } })();
-  console.log('[Server][SocketIO] io.emit =>', event, brief);
-  return _ioEmit(event, ...args);
-};
+// Instrumentación desactivada
 
 io.on('connection', (socket) => {
   console.log('Cliente conectado:', socket.id, 'pid:', process.pid);
-  console.log('[Server][SocketIO] handshake', {
-    id: socket.id,
-    ip: socket.handshake && socket.handshake.address,
-    headers: {
-      host: socket.handshake && socket.handshake.headers && socket.handshake.headers.host,
-      origin: socket.handshake && socket.handshake.headers && socket.handshake.headers.origin,
-      'x-forwarded-for': socket.handshake && socket.handshake.headers && socket.handshake.headers['x-forwarded-for']
-    },
-    nsp: socket.nsp && socket.nsp.name,
-    query: socket.handshake && socket.handshake.query
-  });
-
-  // Entrantes
-  socket.onAny((event, ...args) => {
-    const brief = (() => { try { return JSON.stringify(args[0]).slice(0, 200); } catch { return String(args[0]); } })();
-    console.log('[Server][SocketIO] <=', event, 'from', socket.id, brief);
-  });
-
-  // Salientes por broadcast
-  const _broadcastEmit = socket.broadcast.emit.bind(socket.broadcast);
-  socket.broadcast.emit = (event, ...args) => {
-    const brief = (() => { try { return JSON.stringify(args[0]).slice(0, 200); } catch { return String(args[0]); } })();
-    console.log('[Server][SocketIO] broadcast =>', event, 'from', socket.id, brief);
-    return _broadcastEmit(event, ...args);
-  };
+  // Instrumentación de handshake y trace desactivada
 
   // Registro inicial con nombre (con ACK opcional)
   socket.on('register', (data, ack) => {
@@ -137,7 +128,7 @@ io.on('connection', (socket) => {
 
     // Anunciar a los demás que este jugador se unió
     socket.broadcast.emit('player_joined', { id: socket.id, ...player });
-    console.log(`Jugador registrado: ${name} (${socket.id}) pid:${process.pid}`);
+    // Jugador registrado
   });
 
   // Actualización de posición/rotación del jugador
@@ -164,6 +155,7 @@ io.on('connection', (socket) => {
     const shape = (data && data.shape) || 'cube';
     const size = (data && Number(data.size)) || 1;
     const color = (data && data.color) || '#cccccc';
+    const alpha = (data && typeof data.alpha === 'number') ? Math.max(0, Math.min(1, data.alpha)) : 1;
     let position = (data && data.position) || { x: 0, y: 0.5, z: 0 };
     let rotation = (data && data.rotation) || { x: 0, y: 0, z: 0 };
 
@@ -180,16 +172,44 @@ io.on('connection', (socket) => {
       rotation,
       size,
       color,
+      alpha,
     };
     objects.push(object);
 
     // Difundir a todos (incluyendo al emisor)
     io.emit('object_placed', object);
-    console.log('Objeto colocado:', object, 'pid:', process.pid);
+    // Objeto colocado
+  });
+
+  // Eliminar objeto por id
+  socket.on('remove_object', ({ id }) => {
+    const objId = Number(id);
+    const idx = objects.findIndex(o => o.id === objId);
+    if (idx !== -1) {
+      objects.splice(idx, 1);
+      io.emit('object_removed', { id: objId });
+    }
+  });
+
+  // Generar mini ciudad: añadir sin borrar, evitar solapados
+  socket.on('generate_city', () => {
+    const generated = generateMiniCity();
+    const occupied = new Set(objects.map(o => `${o.position.x},${o.position.y},${o.position.z}`));
+    const added = [];
+    for (const o of generated) {
+      const key = `${o.position.x},${o.position.y},${o.position.z}`;
+      if (occupied.has(key)) continue;
+      o.id = nextObjectId++;
+      objects.push(o);
+      occupied.add(key);
+      added.push(o);
+    }
+    // Difundir solo los nuevos objetos
+    for (const o of added) io.emit('object_placed', o);
   });
 
   socket.on('disconnect', () => {
-    console.log('Cliente desconectado:', socket.id, 'pid:', process.pid);
+    // Cliente desconectado
     if (players.has(socket.id)) {
       players.delete(socket.id);
       socket.broadcast.emit('player_disconnected', { id: socket.id });
@@ -197,10 +217,7 @@ io.on('connection', (socket) => {
   });
 });
 
-// Heartbeat de estado para diagnóstico
-setInterval(() => {
-  console.log('[Server][Heartbeat]', { players: players.size, objects: objects.length, pid: process.pid });
-}, 10000);
+// Heartbeat desactivado
 
 server.listen(port, hostname, () => {
   console.log(`Server running at http://localhost:${port}/`);
