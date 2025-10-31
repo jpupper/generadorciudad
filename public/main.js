@@ -68,16 +68,22 @@
   // Raycaster
   const raycaster = new THREE.Raycaster();
   const mouse = new THREE.Vector2();
-  // Vista previa (wireframe) para colocación de bloques
-  const preview = (() => {
-    const size = cfg.default.size;
-    const edges = new THREE.EdgesGeometry(new THREE.BoxGeometry(size, size, size));
-    const mat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8 });
-    const line = new THREE.LineSegments(edges, mat);
-    line.visible = false;
-    scene.add(line);
-    return line;
-  })();
+  // Vista previa (wireframe) dinámica para colocación de bloques
+  let preview = null;
+  function updatePreview() {
+    const size = currentCubeSize;
+    if (!preview) {
+      const edges = new THREE.EdgesGeometry(new THREE.BoxGeometry(size, size, size));
+      const mat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8 });
+      preview = new THREE.LineSegments(edges, mat);
+      preview.visible = false;
+      scene.add(preview);
+    } else {
+      const newEdges = new THREE.EdgesGeometry(new THREE.BoxGeometry(size, size, size));
+      preview.geometry.dispose();
+      preview.geometry = newEdges;
+    }
+  }
 
   // Estado del cliente
   const players = new Map(); // id -> { group, mesh, label, color, name }
@@ -86,6 +92,7 @@
   let currentShape = cfg.default.shape;
   let currentColor = cfg.default.color;
   let eraseMode = false;
+  let currentCubeSize = cfg.default.size;
 
   // UI
   const overlay = document.getElementById('overlay');
@@ -96,7 +103,7 @@
   const alphaSlider = document.getElementById('alphaSlider');
   const shapeButtons = Array.from(document.querySelectorAll('.shape-btn'));
   const eraseToggle = document.getElementById('eraseToggle');
-  const generateBtn = document.getElementById('generateBtn');
+  const cubeSize = document.getElementById('cubeSize');
 
   shapeButtons.forEach(btn => {
     btn.addEventListener('click', () => {
@@ -126,12 +133,17 @@
     });
   }
 
-  // Botón generar ciudad
-  if (generateBtn) {
-    generateBtn.addEventListener('click', () => {
-      socket.emit('generate_city');
+  // Selector de tamaño
+  if (cubeSize) {
+    cubeSize.value = String(currentCubeSize);
+    cubeSize.addEventListener('change', () => {
+      const v = parseInt(cubeSize.value, 10);
+      currentCubeSize = isNaN(v) ? cfg.default.size : v;
+      updatePreview();
     });
   }
+  // Inicializar preview con tamaño por defecto
+  updatePreview();
 
   // Teclado para mover
   const keys = {};
@@ -238,7 +250,6 @@
 
   // Raycast para colocar objetos
   window.addEventListener('mousedown', (event) => {
-    if (!localPlayer) return;
     if (event.button !== 0) return; // Solo botón izquierdo
 
     const rect = renderer.domElement.getBoundingClientRect();
@@ -263,23 +274,50 @@
     }
 
     let target = new THREE.Vector3();
+    const grid = cfg.gridSize;
+    const size = currentCubeSize;
     if (hit.object.userData.isGround) {
       target.copy(hit.point);
-      target.y = 0.5; // altura del bloque centrado en suelo
+      // Snap global a grilla para suelo
+      target.x = Math.round(target.x / grid) * grid;
+      target.z = Math.round(target.z / grid) * grid;
+      target.y = size / 2; // centro sobre el suelo según tamaño
     } else {
       const basePos = hit.object.position.clone();
+      const hitSize = hit.object.userData && hit.object.userData.size ? hit.object.userData.size : cfg.default.size;
       const n = hit.face ? hit.face.normal.clone() : new THREE.Vector3(0, 1, 0);
-      target.copy(basePos.add(n)); // apilar en dirección de la cara
-    }
+      const absN = { x: Math.abs(n.x), y: Math.abs(n.y), z: Math.abs(n.z) };
+      let axis = 'y';
+      if (absN.x >= absN.y && absN.x >= absN.z) axis = 'x';
+      else if (absN.z >= absN.x && absN.z >= absN.y) axis = 'z';
+      const sign = (axis === 'x' ? Math.sign(n.x) : axis === 'y' ? Math.sign(n.y) : Math.sign(n.z)) || 1;
 
-    target.x = Math.round(target.x / cfg.gridSize) * cfg.gridSize;
-    target.y = Math.max(0.5, Math.round(target.y / cfg.gridSize) * cfg.gridSize);
-    target.z = Math.round(target.z / cfg.gridSize) * cfg.gridSize;
+      // Coordenada a lo largo del eje de la cara
+      target.copy(basePos);
+      const offset = (hitSize + size) / 2;
+      if (axis === 'x') target.x += sign * offset;
+      if (axis === 'y') target.y += sign * offset;
+      if (axis === 'z') target.z += sign * offset;
+
+      // Cuantizar sobre la superficie a subceldas del tamaño del bloque colocado
+      const orthos = axis === 'x' ? ['y', 'z'] : axis === 'y' ? ['x', 'z'] : ['x', 'y'];
+      for (const o of orthos) {
+        const subdivisions = Math.max(1, Math.floor(hitSize / size));
+        const start = basePos[o] - hitSize / 2 + size / 2;
+        const rel = hit.point[o];
+        let k = Math.round((rel - start) / size);
+        k = Math.max(0, Math.min(subdivisions - 1, k));
+        target[o] = start + k * size;
+      }
+      // No aplicar snap global aquí para preservar medias unidades (ej. ±0.5)
+      // Asegurar mínima altura
+      target.y = Math.max(size / 2, target.y);
+    }
 
     socket.emit('place_object', {
       shape: currentShape,
       position: { x: target.x, y: target.y, z: target.z },
-      size: cfg.default.size,
+      size,
       color: currentColor,
       alpha: currentAlpha,
       rotation: { x: 0, y: 0, z: 0 },
@@ -298,17 +336,40 @@
     if (!intersects.length) { preview.visible = false; return; }
     const hit = intersects[0];
     let target = new THREE.Vector3();
+    const grid = cfg.gridSize;
+    const size = currentCubeSize;
     if (hit.object.userData.isGround) {
       target.copy(hit.point);
-      target.y = 0.5;
+      target.x = Math.round(target.x / grid) * grid;
+      target.z = Math.round(target.z / grid) * grid;
+      target.y = size / 2;
     } else {
       const basePos = hit.object.position.clone();
+      const hitSize = hit.object.userData && hit.object.userData.size ? hit.object.userData.size : cfg.default.size;
       const n = hit.face ? hit.face.normal.clone() : new THREE.Vector3(0, 1, 0);
-      target.copy(basePos.add(n));
+      const absN = { x: Math.abs(n.x), y: Math.abs(n.y), z: Math.abs(n.z) };
+      let axis = 'y';
+      if (absN.x >= absN.y && absN.x >= absN.z) axis = 'x';
+      else if (absN.z >= absN.x && absN.z >= absN.y) axis = 'z';
+      const sign = (axis === 'x' ? Math.sign(n.x) : axis === 'y' ? Math.sign(n.y) : Math.sign(n.z)) || 1;
+
+      target.copy(basePos);
+      const offset = (hitSize + size) / 2;
+      if (axis === 'x') target.x += sign * offset;
+      if (axis === 'y') target.y += sign * offset;
+      if (axis === 'z') target.z += sign * offset;
+
+      const orthos = axis === 'x' ? ['y', 'z'] : axis === 'y' ? ['x', 'z'] : ['x', 'y'];
+      for (const o of orthos) {
+        const subdivisions = Math.max(1, Math.floor(hitSize / size));
+        const start = basePos[o] - hitSize / 2 + size / 2;
+        const rel = hit.point[o];
+        let k = Math.round((rel - start) / size);
+        k = Math.max(0, Math.min(subdivisions - 1, k));
+        target[o] = start + k * size;
+      }
+      target.y = Math.max(size / 2, target.y);
     }
-    target.x = Math.round(target.x / cfg.gridSize) * cfg.gridSize;
-    target.y = Math.max(0.5, Math.round(target.y / cfg.gridSize) * cfg.gridSize);
-    target.z = Math.round(target.z / cfg.gridSize) * cfg.gridSize;
     preview.position.set(target.x, target.y, target.z);
     preview.visible = true;
   });
@@ -367,6 +428,7 @@
     mesh.position.set(obj.position.x, obj.position.y, obj.position.z);
     mesh.rotation.set(obj.rotation.x || 0, obj.rotation.y || 0, obj.rotation.z || 0);
     mesh.userData.objectId = obj.id;
+    mesh.userData.size = obj.size;
     scene.add(mesh);
     objectMeshes.set(obj.id, mesh);
   }

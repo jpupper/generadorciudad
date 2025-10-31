@@ -23,7 +23,7 @@ function hashColorFromId(id) {
   return `hsl(${hue}, 70%, 55%)`;
 }
 
-function snapToGrid(p, grid = 1) {
+function snapToGrid(p, grid = 0.5) {
   return {
     x: Math.round(p.x / grid) * grid,
     y: Math.round(p.y / grid) * grid,
@@ -159,10 +159,10 @@ io.on('connection', (socket) => {
     let position = (data && data.position) || { x: 0, y: 0.5, z: 0 };
     let rotation = (data && data.rotation) || { x: 0, y: 0, z: 0 };
 
-    // Snap a la grilla
-    position = snapToGrid(position, 1);
+    // Snap a la grilla con medias unidades para permitir subdivisiones (ej. 1x1 en 2x2)
+    position = snapToGrid(position, 0.5);
 
-    // Altura centrada para unidades de 1
+    // Altura mínima sobre el suelo
     position.y = Math.max(0.5, position.y);
 
     const object = {
