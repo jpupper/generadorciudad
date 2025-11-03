@@ -25,6 +25,12 @@
   controls.dampingFactor = 0.08;
   controls.target.set(0, 0.5, 0);
 
+  // Sistema de cámaras
+  let cameraMode = 'global'; // 'global' o 'firstPerson'
+  let firstPersonYaw = 0;
+  let firstPersonPitch = 0;
+  const FIRST_PERSON_SENSITIVITY = 0.002;
+
   // Luces
   scene.add(new THREE.AmbientLight(0xffffff, 0.6));
   const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
@@ -145,6 +151,30 @@
   // Inicializar preview con tamaño por defecto
   updatePreview();
 
+  // Selector de cámara
+  const cameraModeSel = document.getElementById('cameraModeSel');
+  if (cameraModeSel) {
+    cameraModeSel.addEventListener('change', () => {
+      setCameraMode(cameraModeSel.value);
+    });
+  }
+
+  function setCameraMode(mode) {
+    cameraMode = mode;
+    if (mode === 'global') {
+      // Cámara global: OrbitControls habilitados, no sigue al personaje
+      controls.enabled = true;
+      controls.enablePan = true;
+      controls.enableZoom = true;
+      controls.enableRotate = true;
+    } else if (mode === 'firstPerson') {
+      // Cámara primera persona: OrbitControls deshabilitados
+      controls.enabled = false;
+      firstPersonYaw = 0;
+      firstPersonPitch = 0;
+    }
+  }
+
   // Teclado para mover
   const keys = {};
   window.addEventListener('keydown', (e) => {
@@ -153,6 +183,26 @@
     if (e.code === 'Digit2') setShape('sphere');
   });
   window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+  // Mouse para cámara primera persona
+  let isMouseLocked = false;
+  window.addEventListener('click', () => {
+    if (cameraMode === 'firstPerson' && !isMouseLocked) {
+      renderer.domElement.requestPointerLock();
+    }
+  });
+
+  document.addEventListener('pointerlockchange', () => {
+    isMouseLocked = document.pointerLockElement === renderer.domElement;
+  });
+
+  window.addEventListener('mousemove', (e) => {
+    if (cameraMode === 'firstPerson' && isMouseLocked) {
+      firstPersonYaw -= e.movementX * FIRST_PERSON_SENSITIVITY;
+      firstPersonPitch -= e.movementY * FIRST_PERSON_SENSITIVITY;
+      firstPersonPitch = Math.max(-Math.PI/2, Math.min(Math.PI/2, firstPersonPitch));
+    }
+  });
 
   function setShape(shape) {
     currentShape = shape;
@@ -174,7 +224,12 @@
     const me = players.get(myId);
     if (me) {
       localPlayer = me;
-      controls.target.copy(localPlayer.mesh.position);
+      // En modo global, la cámara NO sigue automáticamente al personaje
+      // Solo establecer target inicial si no hay un target ya definido
+      if (cameraMode === 'global' && controls.target.length() === 0) {
+        // Mantener el target inicial en el centro, no seguir al personaje
+        controls.target.set(0, 0.5, 0);
+      }
     }
 
     // Cargar objetos
@@ -484,21 +539,55 @@
   function updateMovement(dt) {
     if (!localPlayer) return;
     const speed = 5; // unidades por segundo
-    // Movimiento relativo a la cámara
-    const forward = new THREE.Vector3();
-    camera.getWorldDirection(forward);
-    forward.y = 0; forward.normalize();
-    const right = new THREE.Vector3();
-    right.crossVectors(forward, new THREE.Vector3(0,1,0)).normalize();
-    const vx = (keys['KeyD'] ? 1 : 0) + (keys['KeyA'] ? -1 : 0);
-    const vz = (keys['KeyW'] ? 1 : 0) + (keys['KeyS'] ? -1 : 0);
-    if (vx !== 0 || vz !== 0) {
-      const dir = new THREE.Vector3();
-      dir.addScaledVector(right, vx).addScaledVector(forward, vz).normalize().multiplyScalar(speed * dt);
-      localPlayer.mesh.position.add(dir);
-      localPlayer.group.position.copy(localPlayer.mesh.position);
-      localPlayer.label.position.set(localPlayer.mesh.position.x, localPlayer.mesh.position.y + 1.2, localPlayer.mesh.position.z);
-      controls.target.copy(localPlayer.mesh.position);
+    
+    if (cameraMode === 'global') {
+      // Modo global: movimiento relativo a la cámara, pero la cámara NO sigue al personaje
+      const forward = new THREE.Vector3();
+      camera.getWorldDirection(forward);
+      forward.y = 0; forward.normalize();
+      const right = new THREE.Vector3();
+      right.crossVectors(forward, new THREE.Vector3(0,1,0)).normalize();
+      const vx = (keys['KeyD'] ? 1 : 0) + (keys['KeyA'] ? -1 : 0);
+      const vz = (keys['KeyW'] ? 1 : 0) + (keys['KeyS'] ? -1 : 0);
+      if (vx !== 0 || vz !== 0) {
+        const dir = new THREE.Vector3();
+        dir.addScaledVector(right, vx).addScaledVector(forward, vz).normalize().multiplyScalar(speed * dt);
+        localPlayer.mesh.position.add(dir);
+        localPlayer.group.position.copy(localPlayer.mesh.position);
+        localPlayer.label.position.set(localPlayer.mesh.position.x, localPlayer.mesh.position.y + 1.2, localPlayer.mesh.position.z);
+        // NO actualizar controls.target en modo global
+      }
+    } else if (cameraMode === 'firstPerson') {
+      // Modo primera persona: movimiento relativo a la orientación de la cámara primera persona
+      const forward = new THREE.Vector3(
+        Math.sin(firstPersonYaw),
+        0,
+        Math.cos(firstPersonYaw)
+      ).normalize();
+      const right = new THREE.Vector3();
+      right.crossVectors(forward, new THREE.Vector3(0,1,0)).normalize();
+      
+      const vx = (keys['KeyD'] ? 1 : 0) + (keys['KeyA'] ? -1 : 0);
+      const vz = (keys['KeyW'] ? 1 : 0) + (keys['KeyS'] ? -1 : 0);
+      if (vx !== 0 || vz !== 0) {
+        const dir = new THREE.Vector3();
+        dir.addScaledVector(right, vx).addScaledVector(forward, vz).normalize().multiplyScalar(speed * dt);
+        localPlayer.mesh.position.add(dir);
+        localPlayer.group.position.copy(localPlayer.mesh.position);
+        localPlayer.label.position.set(localPlayer.mesh.position.x, localPlayer.mesh.position.y + 1.2, localPlayer.mesh.position.z);
+      }
+      
+      // Posicionar cámara EN el personaje (primera persona)
+      camera.position.copy(localPlayer.mesh.position);
+      camera.position.y += 0.8; // Altura de los ojos
+      
+      // Orientar cámara según yaw y pitch
+      const lookDirection = new THREE.Vector3(
+        Math.sin(firstPersonYaw) * Math.cos(firstPersonPitch),
+        Math.sin(firstPersonPitch),
+        Math.cos(firstPersonYaw) * Math.cos(firstPersonPitch)
+      );
+      camera.lookAt(camera.position.clone().add(lookDirection));
     }
 
     const now = performance.now();
@@ -522,7 +611,12 @@
     const dt = Math.min(0.033, (now - last) / 1000); // Máx 33ms
     last = now;
     updateMovement(dt);
-    controls.update();
+    
+    // Solo actualizar OrbitControls en modo global
+    if (cameraMode === 'global') {
+      controls.update();
+    }
+    
     renderer.render(scene, camera);
     requestAnimationFrame(animate);
   }
