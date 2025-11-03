@@ -201,6 +201,10 @@
       firstPersonYaw -= e.movementX * FIRST_PERSON_SENSITIVITY;
       firstPersonPitch -= e.movementY * FIRST_PERSON_SENSITIVITY;
       firstPersonPitch = Math.max(-Math.PI/2, Math.min(Math.PI/2, firstPersonPitch));
+      // Alinear orientación del personaje con la cámara en primera persona
+      if (localPlayer) {
+        localPlayer.group.rotation.y = firstPersonYaw;
+      }
     }
   });
 
@@ -245,6 +249,8 @@
   });
 
   socket.on('player_moved', (p) => {
+    // No sobrescribir la posición del jugador local con actualizaciones del servidor
+    if (p.id === myId) return;
     const entry = players.get(p.id);
     if (!entry) return;
     entry.mesh.position.set(p.position.x, p.position.y, p.position.z);
@@ -576,6 +582,9 @@
         localPlayer.group.position.copy(localPlayer.mesh.position);
         localPlayer.label.position.set(localPlayer.mesh.position.x, localPlayer.mesh.position.y + 1.2, localPlayer.mesh.position.z);
       }
+
+      // Alinear orientación del personaje con la cámara
+      localPlayer.group.rotation.y = firstPersonYaw;
       
       // Posicionar cámara EN el personaje (primera persona)
       camera.position.copy(localPlayer.mesh.position);
